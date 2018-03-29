@@ -195,7 +195,8 @@ class TestReleaseDetail:
                 for r in reversed(releases)
             ],
             "maintainers": sorted(users, key=lambda u: u.username.lower()),
-            "license": None
+            "license": None,
+            "license_text": None
         }
 
     def test_license_from_classifier(self, db_request):
@@ -228,6 +229,20 @@ class TestReleaseDetail:
         result = views.release_detail(release, db_request)
 
         assert result["license"] == "Multiline License"
+
+    def test_multiline_license_in_context(self, db_request):
+        """
+        When license metadata consists of multiple
+        lines, it is passed to the template.
+        """
+        license_text = "MIT License\nPermission is hereby granted..."
+        release = ReleaseFactory.create(
+            license=license_text
+        )
+
+        result = views.release_detail(release, db_request)
+
+        assert result["license_text"] == license_text
 
     def test_no_license(self, db_request):
         """With no license classifier or metadata, no license is in context."""

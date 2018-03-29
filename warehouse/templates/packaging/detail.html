@@ -152,7 +152,26 @@
         <div class="sidebar-section">
           <h3 class="sidebar-section__title">Meta</h3>
           {% if license %}
-          <p><strong>License:</strong> {{ license }}</p>
+            {% if license_text %}
+              <p><strong>License:</strong> <a data-toggle="modal" data-target="#licenseModal">{{ license }}</a></p>
+              <div class="modal fade" id="licenseModal" role="dialog" tabindex="-1">
+                <div class="modal-dialog" role="document">
+                  <div class="modal-content">
+                      <div class="modal-header">
+                        <h4 class="modal-title">Full license</h4>
+                        <button type="button" class="close" data-dismiss="modal">
+                          <span>&times;</span>
+                        </button>
+                      </div>
+                    <div class="modal-body">
+                      {{ license_text }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {% else %}
+              <p><strong>License:</strong> {{ license }}</p>
+            {% endif %}
           {% endif %}
           {% if release.author_email %}
             <p><strong>Author:</strong> <a href="mailto:{{ release.author_email }}">{{ release.author or release.author_email }}</a></p>

@@ -131,7 +131,13 @@ def release_detail(release, request):
 
     # Make a best effort when the entire license text is given by using the
     # first line only.
-    short_license = release.license.split('\n')[0] if release.license else None
+    if release.license:
+        full_license = release.license.split('\n')
+        short_license = full_license[0]
+        license_is_complete = len(full_license) > 1
+    else:
+        short_license = None
+        license_is_complete = False
 
     if license_classifiers and short_license:
         license = f'{license_classifiers} ({short_license})'
@@ -146,6 +152,7 @@ def release_detail(release, request):
         "all_releases": all_releases,
         "maintainers": maintainers,
         "license": license,
+        "license_text": release.license if license_is_complete else None
     }
 
 
