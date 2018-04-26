@@ -15,7 +15,10 @@ import functools
 import operator
 from itertools import chain
 
+from sqlalchemy.orm.session import Session
+
 from warehouse import db
+from warehouse.cache.origin.derivers import html_cache_deriver
 from warehouse.cache.origin.interfaces import IOriginCache
 
 
@@ -73,7 +76,7 @@ def origin_cache(seconds, keys=None, stale_while_revalidate=None,
                 request.add_response_callback(
                     functools.partial(
                         cacher.cache,
-                        sorted(context_keys + keys),
+                        context_keys + keys,
                         seconds=seconds,
                         stale_while_revalidate=stale_while_revalidate,
                         stale_if_error=stale_if_error,
@@ -132,6 +135,15 @@ def register_origin_cache_keys(config, klass, cache_keys=None,
     )
 
 
+def receive_set(attribute, config, target):
+    cache_keys = config.registry["cache_keys"]
+    session = Session.object_session(target)
+    purges = session.info.setdefault("warehouse.cache.origin.purges", set())
+    key_maker = cache_keys[attribute]
+    keys = key_maker(target).purge
+    purges.update(list(keys))
+
+
 def includeme(config):
     if "origin_cache.backend" in config.registry.settings:
         cache_class = config.maybe_dotted(
@@ -141,6 +153,7 @@ def includeme(config):
             cache_class.create_service,
             IOriginCache,
         )
+        config.add_view_deriver(html_cache_deriver)
 
     config.add_directive(
         "register_origin_cache_keys",

@@ -27,10 +27,12 @@ class UnsuccessfulPurge(Exception):
 @tasks.task(bind=True, ignore_result=True, acks_late=True)
 def purge_key(task, request, key):
     cacher = request.find_service(IOriginCache)
+    request.log.info('Purging %s', key)
     try:
         cacher.purge_key(key)
     except (requests.ConnectionError, requests.HTTPError, requests.Timeout,
             UnsuccessfulPurge) as exc:
+        request.log.error('Error purging %s: %s', key, str(exc))
         raise task.retry(exc=exc)
 
 
@@ -54,7 +56,11 @@ class FastlyCache:
 
     def cache(self, keys, request, response, *, seconds=None,
               stale_while_revalidate=None, stale_if_error=None):
-        response.headers["Surrogate-Key"] = " ".join(keys)
+        existing_keys = set(response.headers.get("Surrogate-Key", "").split())
+
+        response.headers["Surrogate-Key"] = " ".join(
+            sorted(set(keys) | existing_keys)
+        )
 
         values = []
 

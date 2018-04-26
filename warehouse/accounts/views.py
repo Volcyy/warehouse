@@ -29,13 +29,12 @@ from warehouse.accounts.interfaces import (
     IUserService, ITokenService, TokenExpired, TokenInvalid, TokenMissing,
     TooManyFailedLogins,
 )
-from warehouse.accounts.models import Email
+from warehouse.accounts.models import User, Email
 from warehouse.cache.origin import origin_cache
 from warehouse.email import (
     send_password_reset_email, send_email_verification_email,
 )
 from warehouse.packaging.models import Project, Release
-from warehouse.utils.admin_flags import AdminFlag
 from warehouse.utils.http import is_safe_url
 
 
@@ -63,6 +62,7 @@ def failed_logins(exc, request):
 
 @view_config(
     route_name="accounts.profile",
+    context=User,
     renderer="accounts/profile.html",
     decorator=[
         origin_cache(
@@ -233,7 +233,7 @@ def register(request, _form_class=RegistrationForm):
     if request.method == "POST" and request.POST.get('confirm_form'):
         return HTTPSeeOther(request.route_path("index"))
 
-    if AdminFlag.is_enabled(request.db, 'disallow-new-user-registration'):
+    if request.flags.enabled('disallow-new-user-registration'):
         request.session.flash(
             ("New User Registration Temporarily Disabled "
              "See https://pypi.org/help#admin-intervention for details"),
@@ -251,7 +251,7 @@ def register(request, _form_class=RegistrationForm):
         )
         email = user_service.add_email(user.id, form.email.data, primary=True)
 
-        send_email_verification_email(request, email)
+        send_email_verification_email(request, user, email)
 
         return HTTPSeeOther(
             request.route_path("index"),
@@ -408,11 +408,18 @@ def verify_email(request):
         return _error("Email already verified")
 
     email.verified = True
+    email.unverify_reason = None
+    email.transient_bounces = 0
+
+    if not email.primary:
+        confirm_message = 'You can now set this email as your primary address.'
+    else:
+        confirm_message = 'This is your primary address.'
+
     request.user.is_active = True
 
     request.session.flash(
-        f'Email address {email.email} verified. ' +
-        'You can now set this email as your primary address.',
+        f'Email address {email.email} verified. {confirm_message}',
         queue='success'
     )
     return HTTPSeeOther(request.route_path("manage.account"))
@@ -461,6 +468,7 @@ def _login_user(request, userid):
 
 @view_config(
     route_name="includes.current-user-profile-callout",
+    context=User,
     renderer="includes/accounts/profile-callout.html",
     uses_session=True,
 )
@@ -470,6 +478,7 @@ def profile_callout(user, request):
 
 @view_config(
     route_name="includes.edit-profile-button",
+    context=User,
     renderer="includes/accounts/edit-profile-button.html",
     uses_session=True,
 )

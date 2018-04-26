@@ -32,9 +32,14 @@ def test_includeme():
         pretend.call("templates", name=".html"),
     ]
     assert config.add_static_view.calls == [
-        pretend.call("admin/static", "static", cache_max_age=0),
+        pretend.call(
+            "admin/static", "warehouse.admin:static/dist", cache_max_age=0
+        ),
     ]
-    assert config.include.calls == [pretend.call(".routes")]
+    assert config.include.calls == [
+        pretend.call(".routes"),
+        pretend.call(".flags"),
+    ]
     assert config.add_view.calls == [
         pretend.call(
             accounts_views.login,

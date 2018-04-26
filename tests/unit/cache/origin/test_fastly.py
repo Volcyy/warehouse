@@ -28,12 +28,16 @@ class TestPurgeKey:
         cacher = pretend.stub(purge_key=pretend.call_recorder(lambda k: None))
         request = pretend.stub(
             find_service=pretend.call_recorder(lambda iface: cacher),
+            log=pretend.stub(
+                info=pretend.call_recorder(lambda *args, **kwargs: None),
+            )
         )
 
         fastly.purge_key(task, request, "foo")
 
         assert request.find_service.calls == [pretend.call(IOriginCache)]
         assert cacher.purge_key.calls == [pretend.call("foo")]
+        assert request.log.info.calls == [pretend.call('Purging %s', "foo")]
 
     @pytest.mark.parametrize(
         "exception_type",
@@ -63,6 +67,10 @@ class TestPurgeKey:
         cacher = Cacher()
         request = pretend.stub(
             find_service=pretend.call_recorder(lambda iface: cacher),
+            log=pretend.stub(
+                info=pretend.call_recorder(lambda *args, **kwargs: None),
+                error=pretend.call_recorder(lambda *args, **kwargs: None),
+            )
         )
 
         with pytest.raises(celery.exceptions.Retry):
@@ -71,6 +79,10 @@ class TestPurgeKey:
         assert request.find_service.calls == [pretend.call(IOriginCache)]
         assert cacher.purge_key.calls == [pretend.call("foo")]
         assert task.retry.calls == [pretend.call(exc=exc)]
+        assert request.log.info.calls == [pretend.call('Purging %s', "foo")]
+        assert request.log.error.calls == [
+            pretend.call('Error purging %s: %s', "foo", str(exception_type()))
+        ]
 
 
 class TestFastlyCache:
@@ -124,6 +136,35 @@ class TestFastlyCache:
                 "max-age=9123, stale-while-revalidate=4567, "
                 "stale-if-error=2276"
             ),
+        }
+
+    def test_multiple_calls_to_cache_dont_overwrite_surrogate_keys(self):
+        request = pretend.stub()
+        response = pretend.stub(headers={})
+
+        cacher = fastly.FastlyCache(api_key=None, service_id=None, purger=None)
+        cacher.cache(["abc"], request, response)
+        cacher.cache(["defg"], request, response)
+
+        assert response.headers == {
+            "Surrogate-Key": "abc defg",
+        }
+
+    def test_multiple_calls_with_different_requests(self):
+        request_a = pretend.stub()
+        request_b = pretend.stub()
+        response_a = pretend.stub(headers={})
+        response_b = pretend.stub(headers={})
+
+        cacher = fastly.FastlyCache(api_key=None, service_id=None, purger=None)
+        cacher.cache(["abc"], request_a, response_a)
+        cacher.cache(["defg"], request_b, response_b)
+
+        assert response_a.headers == {
+            "Surrogate-Key": "abc",
+        }
+        assert response_b.headers == {
+            "Surrogate-Key": "defg",
         }
 
     def test_purge(self, monkeypatch):

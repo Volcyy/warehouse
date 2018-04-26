@@ -35,7 +35,7 @@ import wtforms.validators
 from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden, HTTPGone
 from pyramid.response import Response
 from pyramid.view import view_config
-from sqlalchemy import exists, func
+from sqlalchemy import exists, func, orm
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
 from warehouse import forms
@@ -45,7 +45,6 @@ from warehouse.packaging.models import (
     Project, Release, Dependency, DependencyKind, Role, File, Filename,
     JournalEntry, BlacklistedProject,
 )
-from warehouse.utils.admin_flags import AdminFlag
 from warehouse.utils import http
 
 
@@ -141,6 +140,11 @@ _valid_description_content_types = {
     'text/plain',
     'text/x-rst',
     'text/markdown',
+}
+
+_valid_markdown_variants = {
+    'CommonMark',
+    'GFM',
 }
 
 
@@ -297,8 +301,11 @@ def _validate_description_content_type(form, field):
         _raise("charset is not valid")
 
     variant = parameters.get('variant')
-    if content_type == 'text/markdown' and variant and variant != 'CommonMark':
-        _raise("variant is not valid")
+    if (content_type == 'text/markdown' and variant and
+            variant not in _valid_markdown_variants):
+        _raise(
+            "variant is not valid, expected one of {}".format(
+                ', '.join(_valid_markdown_variants)))
 
 
 def _construct_dependencies(form, types):
@@ -689,6 +696,32 @@ def _is_duplicate_file(db_session, filename, hashes):
     return None
 
 
+def _no_deprecated_classifiers(request):
+    deprecated_classifiers = {
+        classifier.classifier
+        for classifier in (
+            request.db.query(Classifier.classifier)
+            .filter(Classifier.deprecated.is_(True))
+            .all()
+        )
+    }
+
+    def validate_no_deprecated_classifiers(form, field):
+        invalid_classifiers = set(field.data or []) & deprecated_classifiers
+        if invalid_classifiers:
+            first_invalid_classifier = sorted(invalid_classifiers)[0]
+            host = request.registry.settings.get("warehouse.domain")
+            classifiers_url = request.route_url('classifiers', _host=host)
+
+            raise wtforms.validators.ValidationError(
+                f'Classifier {first_invalid_classifier!r} has been '
+                f'deprecated, see {classifiers_url} for a list of valid '
+                'classifiers.'
+            )
+
+    return validate_no_deprecated_classifiers
+
+
 @view_config(
     route_name="forklift.legacy.file_upload",
     uses_session=True,
@@ -696,6 +729,13 @@ def _is_duplicate_file(db_session, filename, hashes):
     require_methods=["POST"],
 )
 def file_upload(request):
+    # If we're in read-only mode, let upload clients know
+    if request.flags.enabled('read-only'):
+        raise _exc_with_message(
+            HTTPForbidden,
+            'Read Only Mode: Uploads are temporarily disabled',
+        )
+
     # Before we do anything, if there isn't an authenticated user with this
     # request, then we'll go ahead and bomb out.
     if request.authenticated_userid is None:
@@ -704,12 +744,20 @@ def file_upload(request):
             "Invalid or non-existent authentication information.",
         )
 
-    # distutils "helpfully" substitutes unknown, but "required" values with the
-    # string "UNKNOWN". This is basically never what anyone actually wants so
-    # we'll just go ahead and delete anything whose value is UNKNOWN.
+    # Do some cleanup of the various form fields
     for key in list(request.POST):
-        if request.POST.get(key) == "UNKNOWN":
-            del request.POST[key]
+        value = request.POST.get(key)
+        if isinstance(value, str):
+            # distutils "helpfully" substitutes unknown, but "required" values
+            # with the string "UNKNOWN". This is basically never what anyone
+            # actually wants so we'll just go ahead and delete anything whose
+            # value is UNKNOWN.
+            if value.strip() == "UNKNOWN":
+                del request.POST[key]
+
+            # Escape NUL characters, which psycopg doesn't like
+            if '\x00' in value:
+                request.POST[key] = value.replace('\x00', '\\x00')
 
     # We require protocol_version 1, it's the only supported version however
     # passing a different version should raise an error.
@@ -735,6 +783,9 @@ def file_upload(request):
     # Validate and process the incoming metadata.
     form = MetadataForm(request.POST)
 
+    # Add a validator for deprecated classifiers
+    form.classifiers.validators.append(_no_deprecated_classifiers(request))
+
     form.classifiers.choices = [
         (c.classifier, c.classifier) for c in all_classifiers
     ]
@@ -746,19 +797,22 @@ def file_upload(request):
             field_name = sorted(form.errors.keys())[0]
 
         if field_name in form:
-            if form[field_name].description:
+            field = form[field_name]
+            if field.description and isinstance(field, wtforms.StringField):
                 error_message = (
                     "{value!r} is an invalid value for {field}. ".format(
-                        value=form[field_name].data,
-                        field=form[field_name].description) +
+                        value=field.data,
+                        field=field.description) +
                     "Error: {} ".format(form.errors[field_name][0]) +
                     "see "
                     "https://packaging.python.org/specifications/core-metadata"
                 )
             else:
-                error_message = "{field}: {msgs[0]}".format(
-                    field=field_name,
-                    msgs=form.errors[field_name],
+                error_message = (
+                    "Invalid value for {field}. Error: {msgs[0]}".format(
+                        field=field_name,
+                        msgs=form.errors[field_name],
+                    )
                 )
         else:
             error_message = "Error: {}".format(form.errors[field_name][0])
@@ -789,13 +843,14 @@ def file_upload(request):
         # Check for AdminFlag set by a PyPI Administrator disabling new project
         # registration, reasons for this include Spammers, security
         # vulnerabilities, or just wanting to be lazy and not worry ;)
-        if AdminFlag.is_enabled(
-                request.db,
-                'disallow-new-project-registration'):
+        if request.flags.enabled('disallow-new-project-registration'):
             raise _exc_with_message(
                 HTTPForbidden,
                 ("New Project Registration Temporarily Disabled "
-                 "See https://pypi.org/help#admin-intervention for details"),
+                 "See {projecthelp} for details")
+                .format(
+                    projecthelp=request.help_url(_anchor='admin-intervention'),
+                ),
             ) from None
 
         # Ensure that user has at least one verified email address. This should
@@ -805,11 +860,13 @@ def file_upload(request):
         if not any(email.verified for email in request.user.emails):
             raise _exc_with_message(
                 HTTPBadRequest,
-                ("User {!r} has no verified email addresses, please verify "
-                 "at least one address before registering a new project on "
-                 "PyPI. See https://pypi.org/help/#verified-email "
-                 "for more information.")
-                .format(request.user.username),
+                ("User {!r} has no verified email addresses, "
+                 "please verify at least one address before registering "
+                 "a new project on PyPI. See {projecthelp} "
+                 "for more information.").format(
+                    request.user.username,
+                    projecthelp=request.help_url(_anchor='verified-email'),
+                ),
             ) from None
 
         # Before we create the project, we're going to check our blacklist to
@@ -824,8 +881,8 @@ def file_upload(request):
                  "See {projecthelp} "
                  "for more information.").format(
                     name=form.name.data,
-                    projecthelp=request.route_url(
-                        'help', _anchor='project-name')),
+                    projecthelp=request.help_url(_anchor='project-name'),
+                ),
             ) from None
 
         # Also check for collisions with Python Standard Library modules.
@@ -836,9 +893,9 @@ def file_upload(request):
                 ("The name {name!r} is not allowed (conflict with Python "
                  "Standard Library module name). See "
                  "{projecthelp} for more information.").format(
-                     name=form.name.data,
-                     projecthelp=request.route_url(
-                         'help', _anchor='project-name')),
+                    name=form.name.data,
+                    projecthelp=request.help_url(_anchor='project-name')
+                )
             ) from None
 
         # The project doesn't exist in our database, so we'll add it along with
@@ -876,8 +933,10 @@ def file_upload(request):
             HTTPForbidden,
             ("The user '{0}' is not allowed to upload to project '{1}'. "
              "See {2} for more information.")
-            .format(request.user.username, project.name, request.route_url(
-                'help', _anchor='project-name')
+            .format(
+                request.user.username,
+                project.name,
+                request.help_url(_anchor='project-name')
             )
         )
 
@@ -962,6 +1021,9 @@ def file_upload(request):
     releases = (
         request.db.query(Release)
                   .filter(Release.project == project)
+                  .options(orm.load_only(
+                      Release._pypi_ordering,
+                      Release._pypi_hidden))
                   .all()
     )
     for i, r in enumerate(sorted(
@@ -1044,9 +1106,7 @@ def file_upload(request):
                             name=project.name,
                             limit=file_size_limit // (1024 * 1024)) +
                         "See " +
-                        request.route_url(
-                            'help', _anchor='file-size-limit'
-                        ),
+                        request.help_url(_anchor='file-size-limit'),
                     )
                 fp.write(chunk)
                 for hasher in file_hashes.values():
@@ -1082,11 +1142,14 @@ def file_upload(request):
             return Response()
         elif is_duplicate is not None:
             raise _exc_with_message(
-                HTTPBadRequest, "The filename or contents already exist. "
-                                "See " +
-                                request.route_url(
-                                    'help', _anchor='file-name-reuse'
-                                )
+                HTTPBadRequest,
+                # Note: Changing this error message to something that doesn't
+                # start with "File already exists" will break the
+                # --skip-existing functionality in twine
+                # ref: https://github.com/pypa/warehouse/issues/3482
+                # ref: https://github.com/pypa/twine/issues/332
+                "File already exists. See " +
+                request.help_url(_anchor='file-name-reuse')
             )
 
         # Check to see if the file that was uploaded exists in our filename log
@@ -1098,9 +1161,7 @@ def file_upload(request):
                 HTTPBadRequest,
                 "This filename has previously been used, you should use a "
                 "different version. "
-                "See " + request.route_url(
-                    'help', _anchor='file-name-reuse'
-                ),
+                "See " + request.help_url(_anchor='file-name-reuse'),
             )
 
         # Check to see if uploading this file would create a duplicate sdist
@@ -1233,17 +1294,6 @@ def file_upload(request):
                     "package-type": file_.packagetype,
                     "python-version": file_.python_version,
                 },
-            )
-
-        # TODO: Once we no longer have the legacy code base running PyPI we can
-        #       go ahead and delete this tiny bit of shim code, since it only
-        #       exists to purge stuff on legacy PyPI when uploaded to Warehouse
-        old_domain = request.registry.settings.get("warehouse.legacy_domain")
-        if old_domain:
-            request.tm.get().addAfterCommitHook(
-                _legacy_purge,
-                args=["https://{}/pypi".format(old_domain)],
-                kws={"data": {":action": "purge", "project": project.name}},
             )
 
     return Response()

@@ -18,7 +18,7 @@ import sqlalchemy
 import venusian
 import zope.sqlalchemy
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -53,7 +53,11 @@ class ReadOnlyPredicate:
 class ModelBase:
 
     def __repr__(self):
-        self.__repr__ = make_repr(*self.__table__.columns.keys(), _self=self)
+        inst = inspect(self)
+        self.__repr__ = make_repr(
+            *[c_attr.key for c_attr in inst.mapper.column_attrs],
+            _self=self,
+        )
         return self.__repr__()
 
 
@@ -161,6 +165,12 @@ def _create_session(request):
     def cleanup(request):
         session.close()
         connection.close()
+
+    # Check if we're in read-only mode
+    from warehouse.admin.flags import AdminFlag
+    flag = session.query(AdminFlag).get('read-only')
+    if flag and flag.enabled and not request.user.is_superuser:
+        request.tm.doom()
 
     # Return our session now that it's created and registered
     return session

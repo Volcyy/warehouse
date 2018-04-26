@@ -25,7 +25,7 @@ from warehouse.accounts.interfaces import (
     IUserService, ITokenService, TokenExpired, TokenInvalid, TokenMissing,
     TooManyFailedLogins
 )
-from warehouse.utils.admin_flags import AdminFlag
+from warehouse.admin.flags import AdminFlag
 
 from ...common.db.accounts import EmailFactory, UserFactory
 
@@ -391,14 +391,16 @@ class TestRegister:
         assert add_email.calls == [
             pretend.call(user.id, 'foo@bar.com', primary=True),
         ]
-        assert send_email.calls == [pretend.call(db_request, email)]
+        assert send_email.calls == [pretend.call(db_request, user, email)]
 
     def test_register_fails_with_admin_flag_set(self, db_request):
-        admin_flag = (db_request.db.query(AdminFlag)
-                      .filter(
-                          AdminFlag.id == 'disallow-new-user-registration')
-                      .first())
-        admin_flag.enabled = True
+        # This flag was already set via migration, just need to enable it
+        flag = (
+            db_request.db.query(AdminFlag)
+            .get('disallow-new-user-registration')
+        )
+        flag.enabled = True
+
         db_request.method = "POST"
 
         db_request.POST.update({
@@ -925,9 +927,18 @@ class TestResetPassword:
 
 class TestVerifyEmail:
 
-    def test_verify_email(self, db_request, user_service, token_service):
+    @pytest.mark.parametrize(
+        ("is_primary", "confirm_message"),
+        [
+            (True, "This is your primary address."),
+            (False, "You can now set this email as your primary address."),
+        ]
+    )
+    def test_verify_email(
+            self, db_request, user_service, token_service, is_primary,
+            confirm_message):
         user = UserFactory(is_active=False)
-        email = EmailFactory(user=user, verified=False)
+        email = EmailFactory(user=user, verified=False, primary=is_primary)
         db_request.user = user
         db_request.GET.update({"token": "RANDOM_KEY"})
         db_request.route_path = pretend.call_recorder(lambda name: "/")
@@ -956,7 +967,7 @@ class TestVerifyEmail:
         assert db_request.session.flash.calls == [
             pretend.call(
                 f"Email address {email.email} verified. " +
-                "You can now set this email as your primary address.",
+                confirm_message,
                 queue="success"
             ),
         ]

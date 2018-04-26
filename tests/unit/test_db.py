@@ -29,14 +29,26 @@ from warehouse.db import (
 )
 
 
-def test_model_base_repr():
+def test_model_base_repr(monkeypatch):
+    @pretend.call_recorder
+    def inspect(item):
+        return pretend.stub(
+            mapper=pretend.stub(
+                column_attrs=[
+                    pretend.stub(key="foo"),
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(db, "inspect", inspect)
+
     model = ModelBase()
-    model.__table__ = pretend.stub(columns={"foo": None})
     model.foo = "bar"
 
     original_repr = model.__repr__
 
     assert repr(model) == "Base(foo={})".format(repr("bar"))
+    assert inspect.calls == [pretend.call(model)]
     assert model.__repr__ is not original_repr
     assert repr(model) == "Base(foo={})".format(repr("bar"))
 
@@ -147,7 +159,10 @@ def test_creates_engine(monkeypatch):
     ],
 )
 def test_create_session(monkeypatch, read_only, tx_status):
-    session_obj = pretend.stub(close=pretend.call_recorder(lambda: None))
+    session_obj = pretend.stub(
+        close=pretend.call_recorder(lambda: None),
+        query=lambda *a: pretend.stub(get=lambda *a: None),
+    )
     session_cls = pretend.call_recorder(lambda bind: session_obj)
     monkeypatch.setattr(db, "Session", session_cls)
 
@@ -198,6 +213,57 @@ def test_create_session(monkeypatch, read_only, tx_status):
 
     if tx_status != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
         connection.connection.rollback.calls == [pretend.call()]
+
+
+@pytest.mark.parametrize(
+    "admin_flag, is_superuser, doom_calls",
+    [
+        (None, True, []),
+        (None, False, []),
+        (pretend.stub(enabled=False), True, []),
+        (pretend.stub(enabled=False), False, []),
+        (pretend.stub(enabled=True, description='flag description'), True, []),
+        (
+            pretend.stub(enabled=True, description='flag description'),
+            False,
+            [pretend.call()],
+        ),
+    ],
+)
+def test_create_session_read_only_mode(
+        admin_flag, is_superuser, doom_calls, monkeypatch):
+    get = pretend.call_recorder(lambda *a: admin_flag)
+    session_obj = pretend.stub(
+        close=lambda: None,
+        query=lambda *a: pretend.stub(get=get),
+    )
+    session_cls = pretend.call_recorder(lambda bind: session_obj)
+    monkeypatch.setattr(db, "Session", session_cls)
+
+    register = pretend.call_recorder(lambda session, transaction_manager: None)
+    monkeypatch.setattr(zope.sqlalchemy, "register", register)
+
+    connection = pretend.stub(
+        connection=pretend.stub(
+            get_transaction_status=lambda: pretend.stub(),
+            set_session=lambda **kw: None,
+            rollback=lambda: None,
+        ),
+        info={},
+        close=lambda: None,
+    )
+    engine = pretend.stub(connect=pretend.call_recorder(lambda: connection))
+    request = pretend.stub(
+        registry={"sqlalchemy.engine": engine},
+        tm=pretend.stub(doom=pretend.call_recorder(lambda: None)),
+        read_only=False,
+        add_finished_callback=lambda callback: None,
+        user=pretend.stub(is_superuser=is_superuser),
+    )
+
+    assert _create_session(request) is session_obj
+    assert get.calls == [pretend.call('read-only')]
+    assert request.tm.doom.calls == doom_calls
 
 
 @pytest.mark.parametrize(

@@ -102,6 +102,11 @@ def includeme(config):
         '/admin/classifiers/add/',
         domain=warehouse,
     )
+    config.add_route(
+        'admin.classifiers.deprecate',
+        '/admin/classifiers/deprecate/',
+        domain=warehouse,
+    )
 
     # Blacklist related Admin pages
     config.add_route(
@@ -117,5 +122,29 @@ def includeme(config):
     config.add_route(
         "admin.blacklist.remove",
         "/admin/blacklist/remove/",
+        domain=warehouse,
+    )
+
+    # Email related Admin pages
+    config.add_route(
+        "admin.emails.list",
+        "/admin/emails/",
+        domain=warehouse,
+    )
+    config.add_route(
+        "admin.emails.detail",
+        "/admin/emails/{email_id}/",
+        domain=warehouse,
+    )
+
+    # Flags
+    config.add_route(
+        "admin.flags",
+        "/admin/flags/",
+        domain=warehouse,
+    )
+    config.add_route(
+        "admin.flags.edit",
+        "/admin/flags/edit/",
         domain=warehouse,
     )

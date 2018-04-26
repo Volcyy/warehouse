@@ -83,6 +83,9 @@ def includeme(config):
         domain=warehouse,
     )
 
+    # Classifier Routes
+    config.add_route("classifiers", "/classifiers/", domain=warehouse)
+
     # Search Routes
     config.add_route("search", "/search/", domain=warehouse)
 
@@ -135,6 +138,13 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route(
+        "manage.project.destroy_docs",
+        "/manage/project/{project_name}/delete_project_docs/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
         "manage.project.releases",
         "/manage/project/{project_name}/releases/",
         factory="warehouse.packaging.models:ProjectFactory",
@@ -170,6 +180,13 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route(
+        "manage.project.documentation",
+        "/manage/project/{project_name}/documentation/",
+        factory="warehouse.packaging.models:ProjectFactory",
+        traverse="/{project_name}",
+        domain=warehouse,
+    )
+    config.add_route(
         "manage.project.history",
         "/manage/project/{project_name}/history/",
         factory="warehouse.packaging.models:ProjectFactory",
@@ -194,6 +211,9 @@ def includeme(config):
         domain=warehouse,
     )
     config.add_route("packaging.file", files_url)
+
+    # SES Webhooks
+    config.add_route("ses.hook", "/_/ses-hook/", domain=warehouse)
 
     # RSS
     config.add_route("rss.updates", "/rss/updates.xml", domain=warehouse)
@@ -259,11 +279,33 @@ def includeme(config):
         "list_classifiers",
         domain=warehouse,
     )
+    config.add_pypi_action_route(
+        'legacy.api.pypi.search',
+        'search',
+        domain=warehouse,
+    )
+    config.add_pypi_action_route(
+        'legacy.api.pypi.browse',
+        'browse',
+        domain=warehouse,
+    )
 
     # Legacy XMLRPC
     config.add_xmlrpc_endpoint(
         "pypi",
         pattern="/pypi",
+        header="Content-Type:text/xml",
+        domain=warehouse,
+    )
+    config.add_xmlrpc_endpoint(
+        "pypi_slash",
+        pattern="/pypi/",
+        header="Content-Type:text/xml",
+        domain=warehouse,
+    )
+    config.add_xmlrpc_endpoint(
+        "RPC2",
+        pattern="/RPC2",
         header="Content-Type:text/xml",
         domain=warehouse,
     )
